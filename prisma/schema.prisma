@@ -3,8 +3,9 @@ generator client {
 }
 
 datasource db {
-  provider = "sqlite"
-  url      = env("DATABASE_URL")
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
 }
 
 // ── 사용자 ──────────────────────────────────
@@ -13,7 +14,7 @@ model User {
   name          String?
   email         String    @unique
   password      String
-  role          String    @default("user") // user | admin
+  role          String    @default("user")
   createdAt     DateTime  @default(now())
   updatedAt     DateTime  @updatedAt
 
@@ -25,7 +26,7 @@ model Conversation {
   id            String    @id @default(cuid())
   userId        String?
   sessionToken  String?
-  personaType   String    @default("learning") // learning | career | guide
+  personaType   String    @default("learning")
   title         String    @default("새 대화")
   isDeleted     Boolean   @default(false)
   createdAt     DateTime  @default(now())
@@ -42,7 +43,7 @@ model Conversation {
 model Message {
   id              String    @id @default(cuid())
   conversationId  String
-  role            String    // user | assistant
+  role            String
   content         String
   tokensUsed      Int       @default(0)
   createdAt       DateTime  @default(now())

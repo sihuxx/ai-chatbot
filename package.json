@@ -9,7 +9,7 @@
     "postinstall": "prisma generate",
     "db:push": "prisma db push",
     "db:studio": "prisma studio",
-    "db:seed": "tsx prisma/seed.ts"
+    "db:migrate": "prisma migrate deploy"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.39.0",
