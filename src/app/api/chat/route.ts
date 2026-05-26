@@ -27,7 +27,6 @@ export async function POST(req: NextRequest) {
     const systemPrompt = getSystemPrompt(resolvedPersona);
     const userId = (session?.user as any)?.id || null;
 
-    // ── 대화 세션 조회 또는 생성 ──
     let conversation;
     if (conversationId) {
       conversation = await prisma.conversation.findFirst({
@@ -54,7 +53,6 @@ export async function POST(req: NextRequest) {
       });
     }
 
-    // ── 사용자 메시지 저장 ──
     await prisma.message.create({
       data: {
         conversationId: conversation.id,
@@ -63,7 +61,6 @@ export async function POST(req: NextRequest) {
       },
     });
 
-    // ── 대화 컨텍스트 구성 ──
     const contextMessages = (conversation.messages || [])
       .slice(-20)
       .map((m: any) => ({
@@ -84,7 +81,6 @@ export async function POST(req: NextRequest) {
         );
 
         try {
-          // ── Groq API 호출 ──
           const groqRes = await fetch("https://api.groq.com/openai/v1/chat/completions", {
             method: "POST",
             headers: {
@@ -112,7 +108,6 @@ export async function POST(req: NextRequest) {
           fullResponse = data.choices?.[0]?.message?.content || "";
 
           if (fullResponse) {
-            // 청크로 나눠서 전송 (스트리밍 효과)
             const chunkSize = 15;
             for (let i = 0; i < fullResponse.length; i += chunkSize) {
               const chunk = fullResponse.slice(i, i + chunkSize);
@@ -135,7 +130,6 @@ export async function POST(req: NextRequest) {
           );
         }
 
-        // ── 어시스턴트 메시지 DB 저장 ──
         if (fullResponse) {
           await prisma.message.create({
             data: {
