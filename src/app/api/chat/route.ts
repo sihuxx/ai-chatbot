@@ -1,13 +1,10 @@
 import { NextRequest } from "next/server";
-import Anthropic from "@anthropic-ai/sdk";
 import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/auth";
 import prisma from "@/lib/prisma";
 import { personas, PersonaType, getSystemPrompt } from "@/lib/personas";
 
-const anthropic = new Anthropic({
-  apiKey: process.env.ANTHROPIC_API_KEY,
-});
+export const maxDuration = 60;
 
 export async function POST(req: NextRequest) {
   try {
@@ -51,8 +48,7 @@ export async function POST(req: NextRequest) {
           userId,
           sessionToken: userId ? null : sessionToken || null,
           personaType: resolvedPersona,
-          title:
-            message.slice(0, 50) + (message.length > 50 ? "..." : ""),
+          title: message.slice(0, 50) + (message.length > 50 ? "..." : ""),
         },
         include: { messages: { orderBy: { createdAt: "asc" } } },
       });
@@ -67,7 +63,7 @@ export async function POST(req: NextRequest) {
       },
     });
 
-    // ── 대화 컨텍스트 구성 (최근 20개 메시지) ──
+    // ── 대화 컨텍스트 구성 ──
     const contextMessages = (conversation.messages || [])
       .slice(-20)
       .map((m: any) => ({
@@ -81,79 +77,62 @@ export async function POST(req: NextRequest) {
 
     const readable = new ReadableStream({
       async start(controller) {
-        // conversationId 먼저 전송
         controller.enqueue(
           encoder.encode(
-            `data: ${JSON.stringify({
-              type: "meta",
-              conversationId: conversation!.id,
-            })}\n\n`
+            `data: ${JSON.stringify({ type: "meta", conversationId: conversation!.id })}\n\n`
           )
         );
 
         try {
-          const stream = await anthropic.messages.stream({
-            model:
-              process.env.CHATBOT_MODEL || "claude-sonnet-4-20250514",
-            max_tokens:
-              Number(process.env.CHATBOT_MAX_TOKENS) || 2048,
-            system: systemPrompt,
-            messages: contextMessages,
+          // ── Groq API 호출 ──
+          const groqRes = await fetch("https://api.groq.com/openai/v1/chat/completions", {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              "Authorization": `Bearer ${process.env.GROQ_API_KEY}`,
+            },
+            body: JSON.stringify({
+              model: process.env.CHATBOT_MODEL || "llama-3.3-70b-versatile",
+              messages: [
+                { role: "system", content: systemPrompt },
+                ...contextMessages,
+              ],
+              max_tokens: Number(process.env.CHATBOT_MAX_TOKENS) || 2048,
+              temperature: 0.7,
+            }),
           });
 
-          for await (const event of stream) {
-            if (
-              event.type === "content_block_delta" &&
-              event.delta.type === "text_delta"
-            ) {
-              const text = event.delta.text;
-              fullResponse += text;
+          if (!groqRes.ok) {
+            const errBody = await groqRes.text();
+            console.error("Groq API error:", groqRes.status, errBody);
+            throw new Error(`Groq API ${groqRes.status}`);
+          }
+
+          const data = await groqRes.json();
+          fullResponse = data.choices?.[0]?.message?.content || "";
+
+          if (fullResponse) {
+            // 청크로 나눠서 전송 (스트리밍 효과)
+            const chunkSize = 15;
+            for (let i = 0; i < fullResponse.length; i += chunkSize) {
+              const chunk = fullResponse.slice(i, i + chunkSize);
               controller.enqueue(
                 encoder.encode(
-                  `data: ${JSON.stringify({
-                    type: "text",
-                    content: text,
-                  })}\n\n`
+                  `data: ${JSON.stringify({ type: "text", content: chunk })}\n\n`
                 )
               );
             }
           }
-        } catch (err) {
-          console.error("Streaming error:", err);
-          // fallback: non-streaming
-          try {
-            const fallback = await anthropic.messages.create({
-              model:
-                process.env.CHATBOT_MODEL || "claude-sonnet-4-20250514",
-              max_tokens:
-                Number(process.env.CHATBOT_MAX_TOKENS) || 2048,
-              system: systemPrompt,
-              messages: contextMessages,
-            });
-            fullResponse =
-              fallback.content[0]?.type === "text"
-                ? fallback.content[0].text
-                : "";
-            if (fullResponse) {
-              controller.enqueue(
-                encoder.encode(
-                  `data: ${JSON.stringify({
-                    type: "text",
-                    content: fullResponse,
-                  })}\n\n`
-                )
-              );
-            }
-          } catch (fallbackErr) {
-            controller.enqueue(
-              encoder.encode(
-                `data: ${JSON.stringify({
-                  type: "error",
-                  content: "AI 응답 생성에 실패했습니다. 잠시 후 다시 시도해주세요.",
-                })}\n\n`
-              )
-            );
-          }
+        } catch (err: any) {
+          console.error("API error:", err?.message || err);
+          controller.enqueue(
+            encoder.encode(
+              `data: ${JSON.stringify({
+                type: "error",
+                content: "AI 응답 생성에 실패했습니다. API 키를 확인해주세요.",
+              })}\n\n`
+            )
+          );
         }
 
         // ── 어시스턴트 메시지 DB 저장 ──
@@ -172,9 +151,7 @@ export async function POST(req: NextRequest) {
         }
 
         controller.enqueue(
-          encoder.encode(
-            `data: ${JSON.stringify({ type: "done" })}\n\n`
-          )
+          encoder.encode(`data: ${JSON.stringify({ type: "done" })}\n\n`)
         );
         controller.close();
       },
@@ -187,14 +164,11 @@ export async function POST(req: NextRequest) {
         Connection: "keep-alive",
       },
     });
-  } catch (error) {
-    console.error("Chat API error:", error);
+  } catch (error: any) {
+    console.error("Chat API error:", error?.message || error);
     return new Response(
       JSON.stringify({ error: "서버 오류가 발생했습니다." }),
-      {
-        status: 500,
-        headers: { "Content-Type": "application/json" },
-      }
+      { status: 500, headers: { "Content-Type": "application/json" } }
     );
   }
 }
